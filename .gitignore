@@ -1,3 +1,5 @@
 code/cwdm-main/runs/
 code/cwdm-main/results/
 
+**/runs/
+**/*.wandb
