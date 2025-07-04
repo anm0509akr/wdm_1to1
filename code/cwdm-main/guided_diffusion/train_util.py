@@ -8,11 +8,6 @@ import torch.distributed as dist
 import torch.utils.tensorboard
 from torch.optim import AdamW
 import torch.cuda.amp as amp
-from tqdm import tqdm
-
-# Corrected import name: PeakSignalNoiseRatio
-from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 import itertools
 
@@ -105,11 +100,6 @@ class TrainLoop:
             print("Resume Step: " + str(self.resume_step))
             self._load_optimizer_state()
 
-        # Initialize metric modules
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(dist_util.dev())
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(dist_util.dev())
-        self.lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(dist_util.dev())
-        
         if not th.cuda.is_available():
             logger.warn(
                 "Training requires CUDA. "
@@ -147,92 +137,67 @@ class TrainLoop:
             print('no optimizer checkpoint exists')
 
     def run_loop(self):
-        # Initialize tqdm progress bar
-        pbar = tqdm(range(self.lr_anneal_steps), initial=self.step + self.resume_step, dynamic_ncols=True, desc="Training")
-
+        import time
+        t = time.time()
         while not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps:
+            t_total = time.time() - t
+            t = time.time()
+
             try:
-                # This logic is simplified; your original data loading might be more complex
                 batch, cond = next(self.iterdatal)
             except StopIteration:
                 self.iterdatal = iter(self.datal)
                 batch, cond = next(self.iterdatal)
-            
-            # Move data to the correct device
-            if self.mode=='i2i':
-                for key in batch:
-                    batch[key] = batch[key].to(dist_util.dev())
-                ground_truth_image = batch[self.contr]
-            else:
-                batch = batch.to(dist_util.dev())
-                ground_truth_image = batch
 
+            batch = batch.to(dist_util.dev())
             for key in cond:
                 cond[key] = cond[key].to(dist_util.dev())
             
-            # Run a single training step
+            t_fwd = time.time()
+            t_load = t_fwd - t
+
             lossmse, sample, sample_idwt = self.run_step(batch, cond)
 
-            # ▼▼▼ METRIC CALCULATION AND LOGGING ▼▼▼
-            with th.no_grad():
-                # Extract the center slice for 2D metric calculation
-                depth_dim = sample_idwt.size(4)
-                pred_slice = sample_idwt[:, :, :, :, depth_dim // 2]
-                gt_slice = ground_truth_image[:, :, :, :, depth_dim // 2]
-                
-                # Prepare slices for LPIPS (requires 3 channels)
-                if pred_slice.shape[1] == 1:
-                    pred_slice_lpips = pred_slice.repeat(1, 3, 1, 1)
-                    gt_slice_lpips = gt_slice.repeat(1, 3, 1, 1)
-                else:
-                    pred_slice_lpips = pred_slice
-                    gt_slice_lpips = gt_slice
+            t_fwd = time.time() - t_fwd
 
-                # Calculate metrics
-                psnr_val = self.psnr(pred_slice, gt_slice)
-                ssim_val = self.ssim(pred_slice, gt_slice)
-                lpips_val = self.lpips(pred_slice_lpips, gt_slice_lpips)
+            names = ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
 
-            # Log to logger (for progress.csv)
-            logger.logkv("mse", lossmse.item())
-            logger.logkv("psnr", psnr_val.item())
-            logger.logkv("ssim", ssim_val.item())
-            logger.logkv("lpips", lpips_val.item())
-
-            # Log to TensorBoard
             if self.summary_writer is not None:
+                self.summary_writer.add_scalar('time/load', t_load, global_step=self.step + self.resume_step)
+                self.summary_writer.add_scalar('time/forward', t_fwd, global_step=self.step + self.resume_step)
+                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step + self.resume_step)
                 self.summary_writer.add_scalar('loss/MSE', lossmse.item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('metrics/PSNR', psnr_val.item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('metrics/SSIM', ssim_val.item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('metrics/LPIPS', lpips_val.item(), global_step=self.step + self.resume_step)
-            # ▲▲▲ METRIC CALCULATION AND LOGGING ▲▲▲
 
-            # Dump logs to console and progress.csv
+            if self.step % 200 == 0:
+                image_size = sample_idwt.size()[2]
+                midplane = sample_idwt[0, 0, :, :, image_size // 2]
+                self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0),
+                                              global_step=self.step + self.resume_step)
+
+                image_size = sample.size()[2]
+                for ch in range(8):
+                    midplane = sample[0, ch, :, :, image_size // 2]
+                    self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
+                                                  global_step=self.step + self.resume_step)
+
+                if self.mode == 'i2i' and 'cond_1' in cond:
+                    cond_image = cond['cond_1']
+                    image_size = cond_image.size()[3]
+                    midplane = cond_image[0, 0, :, :, image_size // 2]
+                    self.summary_writer.add_image('source/condition_T1n', midplane.unsqueeze(0),
+                                                  global_step=self.step + self.resume_step)
+
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
 
-            # Save model checkpoint
             if self.step % self.save_interval == 0:
                 self.save()
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                    pbar.close()
                     return
-
             self.step += 1
-            
-            # Update progress bar with all metrics
-            pbar.update(1)
-            pbar.set_postfix({
-                "mse": f"{lossmse.item():.4f}",
-                "psnr": f"{psnr_val.item():.2f}",
-                "ssim": f"{ssim_val.item():.4f}",
-                "lpips": f"{lpips_val.item():.4f}",
-            })
 
-        pbar.close()
         if (self.step - 1) % self.save_interval != 0:
             self.save()
-    
 
     def run_step(self, batch, cond, label=None, info=dict()):
         lossmse, sample, sample_idwt = self.forward_backward(batch, cond, label)
