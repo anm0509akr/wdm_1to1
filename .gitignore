@@ -3,3 +3,4 @@ code/cwdm-main/results/
 
 **/runs/
 **/*.wandb
+*.pt
