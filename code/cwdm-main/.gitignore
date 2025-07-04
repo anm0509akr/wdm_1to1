@@ -6,7 +6,7 @@ __pycache__/
 # Defined folders
 ./data/
 ./results/
-./runs/
+#./runs/
 
 # C extensions
 *.so
