@@ -10,6 +10,8 @@ from torch.optim import AdamW
 import torch.cuda.amp as amp
 
 import itertools
+from tqdm import tqdm
+import time
 
 from . import dist_util, logger
 from .resample import LossAwareSampler, UniformSampler
@@ -139,6 +141,7 @@ class TrainLoop:
     def run_loop(self):
         import time
         t = time.time()
+        pbar = tqdm(range(self.lr_anneal_steps), initial=self.step + self.resume_step, dynamic_ncols=True)
         while not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps:
             t_total = time.time() - t
             t = time.time()
@@ -195,7 +198,12 @@ class TrainLoop:
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
             self.step += 1
-
+            
+            pbar.update(1)
+            pbar.set_postfix({"loss" : lossmse.item()})
+        
+        
+        pbar.close()
         if (self.step - 1) % self.save_interval != 0:
             self.save()
 
