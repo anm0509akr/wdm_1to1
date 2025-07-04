@@ -1,0 +1,3 @@
+Logging to ./results
+Creating model and diffusion...
+Load model from: /home/a_anami/work/code/cwdm-main/runs/Jun27_08-55-49_5bfbe33afd57/checkpoints/brats_100000.pt

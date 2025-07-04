@@ -1,0 +1,3 @@
+Logging to ./results
+Creating model and diffusion...
+Load model from: /home/a_anami/work/code/cwdm/t1ce_gen.pt

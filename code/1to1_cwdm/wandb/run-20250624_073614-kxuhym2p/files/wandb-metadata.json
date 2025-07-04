@@ -1,0 +1,78 @@
+{
+  "os": "Linux-5.4.0-155-generic-x86_64-with-glibc2.31",
+  "python": "CPython 3.10.6",
+  "startedAt": "2025-06-24T07:36:15.222878Z",
+  "args": [
+    "--data_dir=/home/a_anami/work/data/BraTS2023-GLI/training",
+    "--resume_checkpoint=",
+    "--resume_step=0",
+    "--image_size=224",
+    "--use_fp16=False",
+    "--lr=1e-5",
+    "--save_interval=100000",
+    "--dataset=brats",
+    "--num_channels=64",
+    "--class_cond=False",
+    "--num_res_blocks=2",
+    "--num_heads=1",
+    "--learn_sigma=False",
+    "--use_scale_shift_norm=False",
+    "--attention_resolutions=",
+    "--channel_mult=1,2,2,4,4",
+    "--diffusion_steps=1000",
+    "--noise_schedule=linear",
+    "--rescale_learned_sigmas=False",
+    "--rescale_timesteps=False",
+    "--dims=3",
+    "--batch_size=1",
+    "--num_groups=32",
+    "--in_channels=16",
+    "--out_channels=8",
+    "--bottleneck_attention=False",
+    "--resample_2d=False",
+    "--additive_skips=False",
+    "--use_freq=False",
+    "--predict_xstart=True"
+  ],
+  "program": "/home/a_anami/work/code/1to1_cwdm/scripts/train.py",
+  "codePath": "code/1to1_cwdm/scripts/train.py",
+  "email": "akr.anami.ynu@gmail.com",
+  "root": "/home/a_anami/work/code/1to1_cwdm",
+  "host": "5bfbe33afd57",
+  "executable": "/root/conda/bin/python",
+  "codePathLocal": "scripts/train.py",
+  "cpu_count": 14,
+  "cpu_count_logical": 28,
+  "gpu": "NVIDIA RTX A5000",
+  "gpu_count": 2,
+  "disk": {
+    "/": {
+      "total": "515144417280",
+      "used": "423120252928"
+    }
+  },
+  "memory": {
+    "total": "134739746816"
+  },
+  "cpu": {
+    "count": 14,
+    "countLogical": 28
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "25757220864",
+      "cudaCores": 8192,
+      "architecture": "Ampere",
+      "uuid": "GPU-55155363-9e49-7e1f-726c-bbaed6831b0b"
+    },
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "25757220864",
+      "cudaCores": 8192,
+      "architecture": "Ampere",
+      "uuid": "GPU-b2dbb455-4f99-3342-1583-b5db74e1ca72"
+    }
+  ],
+  "cudaVersion": "12.2"
+}

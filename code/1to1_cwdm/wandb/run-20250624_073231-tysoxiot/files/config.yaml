@@ -1,0 +1,115 @@
+_wandb:
+    value:
+        cli_version: 0.20.1
+        m: []
+        python_version: 3.10.6
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 16
+                - 55
+            "4": 3.10.6
+            "5": 0.20.1
+            "12": 0.20.1
+            "13": linux-x86_64
+additive_skips:
+    value: false
+attention_resolutions:
+    value: ""
+batch_size:
+    value: 1
+bottleneck_attention:
+    value: false
+channel_mult:
+    value: 1,2,2,4,4
+class_cond:
+    value: false
+data_dir:
+    value: /home/a_anami/work/data/BraTS2023-GLI/training
+dataset:
+    value: brats
+diffusion_steps:
+    value: 1000
+dims:
+    value: 3
+dropout:
+    value: 0
+ema_rate:
+    value: "0.9999"
+fp16_scale_growth:
+    value: 0.001
+image_size:
+    value: 224
+in_channels:
+    value: 16
+learn_sigma:
+    value: false
+log_interval:
+    value: 10
+loss_level:
+    value: image
+lr:
+    value: 1e-05
+lr_anneal_steps:
+    value: 0
+microbatch:
+    value: -1
+mode:
+    value: default
+noise_schedule:
+    value: linear
+num_channels:
+    value: 64
+num_groups:
+    value: 32
+num_head_channels:
+    value: -1
+num_heads:
+    value: 1
+num_heads_upsample:
+    value: -1
+num_res_blocks:
+    value: 2
+out_channels:
+    value: 8
+predict_xstart:
+    value: true
+resample_2d:
+    value: false
+resblock_updown:
+    value: true
+rescale_learned_sigmas:
+    value: false
+rescale_timesteps:
+    value: false
+resume_checkpoint:
+    value: ""
+resume_step:
+    value: 0
+save_interval:
+    value: 100000
+schedule_sampler:
+    value: uniform
+summary_writer:
+    value: null
+timestep_respacing:
+    value: ""
+use_checkpoint:
+    value: false
+use_fp16:
+    value: false
+use_freq:
+    value: false
+use_kl:
+    value: false
+use_new_attention_order:
+    value: false
+use_scale_shift_norm:
+    value: false
+weight_decay:
+    value: 0
