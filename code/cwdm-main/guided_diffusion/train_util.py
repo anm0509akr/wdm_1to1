@@ -12,6 +12,7 @@ import torch.cuda.amp as amp
 import itertools
 from tqdm import tqdm
 import time
+import datetime
 
 from . import dist_util, logger
 from .resample import LossAwareSampler, UniformSampler
@@ -315,18 +316,24 @@ class TrainLoop:
         def save_checkpoint(rate, state_dict):
             if dist.get_rank() == 0:
                 logger.log("Saving model...")
+                
+                now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                
                 if self.dataset == 'brats':
-                    filename = f"brats_{(self.step+self.resume_step):06d}.pt"
+                    filename = f"brats_{now}_{(self.step+self.resume_step):06d}.pt"
                 elif self.dataset == 'lidc-idri':
-                    filename = f"lidc-idri_{(self.step+self.resume_step):06d}.pt"
+                    filename = f"lidc-idri_{now}_{(self.step+self.resume_step):06d}.pt"
                 elif self.dataset == 'brats_inpainting':
-                    filename = f"brats_inpainting_{(self.step + self.resume_step):06d}.pt"
+                    filename = f"brats_inpainting_{now}_{(self.step + self.resume_step):06d}.pt"
                 elif self.dataset == 'synthrad':
-                    filename = f"synthrad_{(self.step + self.resume_step):06d}.pt"
+                    filename = f"synthrad_{now}_{(self.step + self.resume_step):06d}.pt"
                 else:
                     raise ValueError(f'dataset {self.dataset} not implemented')
 
-                with bf.BlobFile(bf.join(get_blob_logdir(), 'checkpoints', filename), "wb") as f:
+                save_dir = "/home/a_anami/work/data/checkpoints"
+                os.makedirs(save_dir, exist_ok=True)
+                
+                with bf.BlobFile(bf.join(save_dir, filename), "wb") as f:
                     th.save(state_dict, f)
 
         save_checkpoint(0, self.model.state_dict())
