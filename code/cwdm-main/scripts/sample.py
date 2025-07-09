@@ -1,5 +1,6 @@
 """
 A script for sampling from a diffusion model for paired image-to-image translation.
+(Modified for t1n to t1c translation, compatible with a specific bratsloader)
 """
 
 import argparse
@@ -12,6 +13,7 @@ import sys
 import torch as th
 import torch.nn.functional as F
 
+# Add the project root to the Python path
 sys.path.append(".")
 
 from guided_diffusion import (dist_util,
@@ -34,9 +36,10 @@ def main():
     diffusion.mode = 'i2i'
     logger.log("Load model from: {}".format(args.model_path))
     model.load_state_dict(dist_util.load_state_dict(args.model_path, map_location="cpu"))
-    model.to(dist_util.dev([0, 1]) if len(args.devices) > 1 else dist_util.dev())  # allow for 2 devices
+    model.to(dist_util.dev([0, 1]) if len(args.devices) > 1 else dist_util.dev())
 
     if args.dataset == 'brats':
+        # Use the modified BRATSVolumes loader for evaluation
         ds = BRATSVolumes(args.data_dir, mode='eval')
 
     datal = th.utils.data.DataLoader(ds,
@@ -48,43 +51,35 @@ def main():
     idwt = IDWT_3D("haar")
     dwt = DWT_3D("haar")
 
+    # Set random seeds for reproducibility
     th.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    for batch in iter(datal):
-        batch['t1n'] = batch['t1n'].to(dist_util.dev())
-        batch['t1c'] = batch['t1c'].to(dist_util.dev())
-        batch['t2w'] = batch['t2w'].to(dist_util.dev())
-        batch['t2f'] = batch['t2f'].to(dist_util.dev())
+    # ★★ 修正点1: enumerateを使い、ループのインデックス(i)を取得する ★★
+    # ★★ DataLoaderが返すタプルを target_batch と cond_batch で受け取る ★★
+    for i, (target_batch, cond_batch) in enumerate(datal):
+        
+        # Since batch size is 1, get the first element from the list
+        target = target_batch.to(dist_util.dev())
+        cond_1 = cond_batch['cond_1'].to(dist_util.dev())
 
-        subj = batch['subj'][0].split('validation/')[1][:19]
-        print(subj)
+        # ★★ 修正点2: 被験者IDの代わりに連番でフォルダ名を作成する ★★
+        subj = f"Sample_{i:04d}"
+        print(f"Processing: {subj}")
 
-        # ご指定のタスクに合わせてモダリティを固定
-        # 出力（生成対象）: t1c
-        # 入力（条件）: t1n, t2w, t2f
-        target = batch['t1c']
-        cond_1 = batch['t1n']
-        cond_2 = batch['t2w']
-        cond_3 = batch['t2f']
-
-
-        # Conditioning vector
+        # Create conditioning vector from t1n only
         LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_1)
         cond = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_2)
-        cond = th.cat([cond, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_3)
-        cond = th.cat([cond, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
 
-        # Noise
+        # Prepare noise
         noise = th.randn(args.batch_size, 8, 112, 112, 80).to(dist_util.dev())
 
         model_kwargs = {}
 
         sample_fn = diffusion.p_sample_loop
 
+        # Run sampling
         sample = sample_fn(model=model,
                            shape=noise.shape,
                            noise=noise,
@@ -92,6 +87,7 @@ def main():
                            clip_denoised=args.clip_denoised,
                            model_kwargs=model_kwargs)
 
+        # Inverse DWT to bring the generated image back to the pixel space
         B, _, D, H, W = sample.size()
         sample = idwt(sample[:, 0, :, :, :].view(B, 1, D, H, W) * 3.,
                       sample[:, 1, :, :, :].view(B, 1, D, H, W),
@@ -102,14 +98,14 @@ def main():
                       sample[:, 6, :, :, :].view(B, 1, D, H, W),
                       sample[:, 7, :, :, :].view(B, 1, D, H, W))
 
+        # Post-processing
         sample[sample <= 0] = 0
         sample[sample >= 1] = 1
-        sample[cond_1 == 0] = 0 # Zero out all non-brain parts
+        sample[cond_1 == 0] = 0 # Mask out non-brain regions
 
         if len(sample.shape) == 5:
-            sample = sample.squeeze(dim=1)  # don't squeeze batch dimension for bs 1
+            sample = sample.squeeze(dim=1)
 
-        # Pad/Crop to original resolution
         sample = sample[:, :, :, :155]
 
         if len(target.shape) == 5:
@@ -117,17 +113,21 @@ def main():
 
         target = target[:, :, :, :155]
 
+        # Create output directories
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-        pathlib.Path(os.path.join(args.output_dir, subj)).mkdir(parents=True, exist_ok=True)
+        # ★★ 修正点3: 連番のフォルダパスを作成する ★★
+        subj_dir = os.path.join(args.output_dir, subj)
+        pathlib.Path(subj_dir).mkdir(parents=True, exist_ok=True)
 
-        for i in range(sample.shape[0]):
-            output_name = os.path.join(args.output_dir, subj, 'sample.nii.gz')
-            img = nib.Nifti1Image(sample.detach().cpu().numpy()[i, :, :, :], np.eye(4))
+        # Save generated and target images
+        for i_img in range(sample.shape[0]):
+            output_name = os.path.join(subj_dir, 'sample_t1c_from_t1n.nii.gz')
+            img = nib.Nifti1Image(sample.detach().cpu().numpy()[i_img, :, :, :], np.eye(4))
             nib.save(img=img, filename=output_name)
             print(f'Saved to {output_name}')
 
-            output_name = os.path.join(args.output_dir, subj, 'target.nii.gz')
-            img = nib.Nifti1Image(target.detach().cpu().numpy()[i, :, :, :], np.eye(4))
+            output_name = os.path.join(subj_dir, 'target_t1c.nii.gz')
+            img = nib.Nifti1Image(target.detach().cpu().numpy()[i_img, :, :, :], np.eye(4))
             nib.save(img=img, filename=output_name)
 
 def create_argparser():
@@ -148,12 +148,10 @@ def create_argparser():
         renormalize=False,
         image_size=256,
         half_res_crop=False,
-        concat_coords=False, # if true, add 3 (for 3d) or 2 (for 2d) to in_channels
+        concat_coords=False,
     )
-    defaults.update({k:v for k, v in model_and_diffusion_defaults().items() if k not in defaults})
-    # 'contr'引数をパーサーから削除
-    if 'contr' in defaults:
-        del defaults['contr']
+    # Remove the 'contr' argument as it's no longer needed
+    defaults.update({k:v for k, v in model_and_diffusion_defaults().items() if 'contr' not in k}) 
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser
