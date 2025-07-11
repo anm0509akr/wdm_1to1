@@ -15,7 +15,7 @@ import time
 import datetime
 
 from . import dist_util, logger
-from .resample import LossAwareSampler, UniformSampler
+# from .resample import LossAwareSampler, UniformSampler # --- 変更点 1: 不要なインポートを削除 ---
 from DWT_IDWT.DWT_IDWT_layer import DWT_3D, IDWT_3D
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -30,41 +30,31 @@ class TrainLoop:
     def __init__(
         self,
         *,
-        model,
-        diffusion,
+        model, # U-Netモデル
+        flow_matching, # FlowMatchingオブジェクト
+        schedule_sampler, # Schedule Sampler
         data,
         batch_size,
-        in_channels,
-        image_size,
         microbatch,
         lr,
         ema_rate,
         log_interval,
-        contr,
         save_interval,
         resume_checkpoint,
         resume_step,
         use_fp16=False,
         fp16_scale_growth=1e-3,
-        schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        dataset='brats',
-        summary_writer=None,
-        mode='default',
-        loss_level='image',
+        **kwargs, # その他の引数
     ):
-        self.summary_writer = summary_writer
-        self.mode = mode
         self.model = model
-        self.diffusion = diffusion
-        self.datal = data
-        self.dataset = dataset
+        self.flow_matching = flow_matching
+        self.schedule_sampler = schedule_sampler
+        self.data = data
+        self.datal = data # 変数名を統一
         self.iterdatal = iter(data)
         self.batch_size = batch_size
-        self.in_channels = in_channels
-        self.image_size = image_size
-        self.contr = contr
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
         self.ema_rate = (
@@ -75,276 +65,194 @@ class TrainLoop:
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.resume_checkpoint = resume_checkpoint
+        self.resume_step = resume_step
         self.use_fp16 = use_fp16
-        if self.use_fp16:
-            self.grad_scaler = amp.GradScaler()
-        else:
-            self.grad_scaler = amp.GradScaler(enabled=False)
-
-        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        self.fp16_scale_growth = fp16_scale_growth
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
 
-        self.dwt = DWT_3D('haar')
-        self.idwt = IDWT_3D('haar')
-
-        self.loss_level = loss_level
-
-        self.step = 1
-        self.resume_step = resume_step
+        self.step = 0
         self.global_batch = self.batch_size * dist.get_world_size()
 
         self.sync_cuda = th.cuda.is_available()
+        self.device = dist_util.dev()
 
         self._load_and_sync_parameters()
-
+        
+        # GradScalerの初期化
+        self.grad_scaler = amp.GradScaler(enabled=self.use_fp16)
+        
+        # オプティマイザとEMAパラメータの準備
         self.opt = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        self.ema_params = [copy.deepcopy(list(self.model.parameters())) for _ in self.ema_rate]
+        
         if self.resume_step:
-            print("Resume Step: " + str(self.resume_step))
             self._load_optimizer_state()
+            # EMAパラメータもロード
+            for rate, params in zip(self.ema_rate, self.ema_params):
+                self._load_ema_parameters(rate)
 
-        if not th.cuda.is_available():
-            logger.warn(
-                "Training requires CUDA. "
-            )
-
+        # DWT/IDWT層
+        self.dwt = DWT_3D('haar')
+        self.idwt = IDWT_3D('haar')
+        
     def _load_and_sync_parameters(self):
+        # ユーザー提供のコードを尊重し、簡略化
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-
         if resume_checkpoint:
-            print('resume model ...')
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            if dist.get_rank() == 0:
-                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
-                    dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
-                    )
-                )
-
+            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+            self.model.load_state_dict(
+                dist_util.load_state_dict(resume_checkpoint, map_location=self.device)
+            )
         dist_util.sync_params(self.model.parameters())
 
-
     def _load_optimizer_state(self):
+        # ユーザー提供のコードを尊重
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-        opt_checkpoint = bf.join(
-            bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt"
-        )
+        opt_checkpoint = bf.join(bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt")
         if bf.exists(opt_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-            state_dict = dist_util.load_state_dict(
-                opt_checkpoint, map_location=dist_util.dev()
-            )
+            state_dict = dist_util.load_state_dict(opt_checkpoint, map_location=self.device)
             self.opt.load_state_dict(state_dict)
-        else:
-            print('no optimizer checkpoint exists')
+            
+            
+    def _load_ema_parameters(self, rate):
+        ema_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
+        ema_checkpoint = bf.join(
+            bf.dirname(ema_checkpoint), f"ema_{rate}_{(self.resume_step):06d}.pt"
+        )
+        if bf.exists(ema_checkpoint):
+            logger.log(f"loading EMA state from checkpoint: {ema_checkpoint}...")
+            state_dict = dist_util.load_state_dict(ema_checkpoint, map_location=self.device)
+            # self.ema_params に直接ロードする
+            # この部分はstate_dictの形式に合わせて調整が必要な場合があります
+            # ここでは、ema_params[i]がパラメータのリストであることを想定しています
+            ema_rate_index = self.ema_rate.index(rate)
+            for i, p in enumerate(self.ema_params[ema_rate_index]):
+                p.data.copy_(state_dict[f"arr_{i}"])
+
+
 
     def run_loop(self):
-        import time
-        t = time.time()
-        pbar = tqdm(range(self.lr_anneal_steps), initial=self.step + self.resume_step, dynamic_ncols=True)
-        while not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps:
-            t_total = time.time() - t
-            t = time.time()
-
+        # ユーザー提供のrun_loopを尊重しつつ、ステップの進行を修正
+        pbar = tqdm(range(self.lr_anneal_steps), initial=self.resume_step, dynamic_ncols=True)
+        self.step = self.resume_step
+        while self.step < self.lr_anneal_steps:
             try:
                 batch, cond = next(self.iterdatal)
             except StopIteration:
                 self.iterdatal = iter(self.datal)
                 batch, cond = next(self.iterdatal)
-
-            batch = batch.to(dist_util.dev())
-            for key in cond:
-                cond[key] = cond[key].to(dist_util.dev())
             
-            t_fwd = time.time()
-            t_load = t_fwd - t
-
-            lossmse, sample, sample_idwt = self.run_step(batch, cond)
-
-            t_fwd = time.time() - t_fwd
-
-            names = ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
-
-            if self.summary_writer is not None:
-                self.summary_writer.add_scalar('time/load', t_load, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('time/forward', t_fwd, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/MSE', lossmse.item(), global_step=self.step + self.resume_step)
-
-            if self.step % 200 == 0:
-                image_size = sample_idwt.size()[2]
-                midplane = sample_idwt[0, 0, :, :, image_size // 2]
-                self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0),
-                                              global_step=self.step + self.resume_step)
-
-                image_size = sample.size()[2]
-                for ch in range(8):
-                    midplane = sample[0, ch, :, :, image_size // 2]
-                    self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
-                                                  global_step=self.step + self.resume_step)
-
-                if self.mode == 'i2i' and 'cond_1' in cond:
-                    cond_image = cond['cond_1']
-                    image_size = cond_image.size()[3]
-                    midplane = cond_image[0, 0, :, :, image_size // 2]
-                    self.summary_writer.add_image('source/condition_T1n', midplane.unsqueeze(0),
-                                                  global_step=self.step + self.resume_step)
-
+            self.run_step(batch, cond)
+            
+            pbar.update(1)
+            # pbarのloss表示はrun_step内でlog_step経由で行う
+            
             if self.step % self.log_interval == 0:
+                loss_avg = logger.getkvs()['loss/loss']
+                pbar.set_postfix({"loss": loss_avg})
                 logger.dumpkvs()
 
             if self.step % self.save_interval == 0:
                 self.save()
-                if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                    return
+
             self.step += 1
             
-            pbar.update(1)
-            pbar.set_postfix({"loss" : lossmse.item()})
-        
-        
         pbar.close()
         if (self.step - 1) % self.save_interval != 0:
             self.save()
 
-    def run_step(self, batch, cond, label=None, info=dict()):
-        lossmse, sample, sample_idwt = self.forward_backward(batch, cond, label)
-
-        if self.use_fp16:
-            self.grad_scaler.unscale_(self.opt)
-
-        with th.no_grad():
-            param_max_norm = max([p.abs().max().item() for p in self.model.parameters()])
-            grad_max_norm = max([p.grad.abs().max().item() for p in self.model.parameters()])
-            info['norm/param_max'] = param_max_norm
-            info['norm/grad_max'] = grad_max_norm
-
-        if not th.isfinite(lossmse):
-            if not th.isfinite(th.tensor(param_max_norm)):
-                logger.log(f"Model parameters contain non-finite value {param_max_norm}, entering breakpoint", level=logger.ERROR)
-                breakpoint()
-            else:
-                logger.log(f"Model parameters are finite, but loss is not: {lossmse}"
-                           "\n -> update will be skipped in grad_scaler.step()", level=logger.WARN)
-
-        if self.use_fp16:
-            print("Use fp16 ...")
-            self.grad_scaler.step(self.opt)
-            self.grad_scaler.update()
-            info['scale'] = self.grad_scaler.get_scale()
-        else:
-            self.opt.step()
+    def run_step(self, batch, cond):
+        self.forward_backward(batch, cond)
+        self.grad_scaler.unscale_(self.opt)
+        # th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0) # 必要に応じて勾配クリッピング
+        self.grad_scaler.step(self.opt)
+        self.grad_scaler.update()
+        self._update_ema()
         self._anneal_lr()
         self.log_step()
-        return lossmse, sample, sample_idwt
 
-    def forward_backward(self, batch, cond, label=None):
-        for p in self.model.parameters():
-            p.grad = None
+    def forward_backward(self, batch, cond):
+        self.opt.zero_grad()
+        
+        for i in range(0, batch.shape[0], self.microbatch):
+            micro_batch = batch[i : i + self.microbatch].to(self.device)
+            micro_cond_dict = {
+                k: v[i : i + self.microbatch].to(self.device) for k, v in cond.items()
+            }
+            
+            # --- ⬇️ ここが重要な修正箇所です ⬇️ ---
+            
+            # ターゲット画像 (t1c) をWavelet変換
+            x_1_wav_components = self.dwt(micro_batch)
+            # dwtが返す全テンソルを単純に結合します
+            x_1_wav = th.cat(x_1_wav_components, dim=1)
+            
+            # 条件画像 (t1n) をWavelet変換
+            cond_image = micro_cond_dict['cond_1']
+            cond_wav_components = self.dwt(cond_image)
+            # こちらも同様に結合します
+            cond_wav = th.cat(cond_wav_components, dim=1)
 
-        if self.mode == 'i2i':
-            t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
-        else:
-            t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
+            # --- ⬆️ 修正はここまで ⬆️ ---
 
-        compute_losses = functools.partial(self.diffusion.training_losses,
-                                           self.model,
-                                           x_start=batch,
-                                           t=t,
-                                           model_kwargs=cond,
-                                           labels=label,
-                                           mode=self.mode,
-                                           contr=self.contr
-                                           )
-        losses1 = compute_losses()
+            x_0_wav = th.randn_like(x_1_wav)
+            t, weights = self.schedule_sampler.sample(micro_batch.shape[0], self.device)
+            model_kwargs = {"cond": cond_wav}
 
-        if isinstance(self.schedule_sampler, LossAwareSampler):
-            self.schedule_sampler.update_with_local_losses(
-                t, losses1["loss"].detach())
-
-        losses = losses1[0]
-        sample = losses1[1]
-        sample_idwt = losses1[2]
-
-        self.summary_writer.add_scalar('loss/mse_wav_lll', losses["mse_wav"][0].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_llh', losses["mse_wav"][1].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_lhl', losses["mse_wav"][2].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_lhh', losses["mse_wav"][3].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_hll', losses["mse_wav"][4].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_hlh', losses["mse_wav"][5].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_hhl', losses["mse_wav"][6].item(),
-                                       global_step=self.step + self.resume_step)
-        self.summary_writer.add_scalar('loss/mse_wav_hhh', losses["mse_wav"][7].item(),
-                                       global_step=self.step + self.resume_step)
-
-        weights = th.ones(len(losses["mse_wav"])).cuda()
-
-        loss = (losses["mse_wav"] * weights).mean()
-        lossmse = loss.detach()
-
-        log_loss_dict(self.diffusion, t, {k: v * weights for k, v in losses.items()})
-
-        if not th.isfinite(loss):
-            logger.log(f"Encountered non-finite loss {loss}")
-        if self.use_fp16:
+            with amp.autocast(enabled=self.use_fp16):
+                losses = self.flow_matching.training_losses(
+                    model=self.model,
+                    x_0=x_0_wav, 
+                    x_1=x_1_wav, 
+                    t=t,
+                    model_kwargs=model_kwargs
+                )
+            
+            loss = (losses["loss"] * weights).mean()
+            log_loss_dict(self.flow_matching, t, losses)
             self.grad_scaler.scale(loss).backward()
-        else:
-            loss.backward()
 
-        return lossmse.detach(), sample, sample_idwt
-
+            
+    @th.no_grad() # 勾配計算を無効化することを明示的に指示
+    def _update_ema(self):
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            for p_main, p_ema in zip(self.model.parameters(), params):
+                # p_ema の値を直接変更せず、新しい値を計算してからコピーする
+                p_ema.copy_(p_ema * rate + p_main * (1 - rate))
+    
+    # _anneal_lr, log_step, save メソッドはユーザー提供のものを尊重（適宜修正）
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
             return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
+        frac_done = self.step / self.lr_anneal_steps
         lr = self.lr * (1 - frac_done)
         for param_group in self.opt.param_groups:
             param_group["lr"] = lr
 
     def log_step(self):
-        logger.logkv("step", self.step + self.resume_step)
-        logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+        logger.logkv("step", self.step)
+        logger.logkv("samples", (self.step + 1) * self.global_batch)
 
     def save(self):
-        def save_checkpoint(rate, state_dict):
+        # EMAモデルを保存するロジック（必要に応じて）
+        def save_checkpoint(state_dict, filename):
             if dist.get_rank() == 0:
-                logger.log("Saving model...")
-                
-                now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                if self.dataset == 'brats':
-                    filename = f"brats_{now}_{(self.step+self.resume_step):06d}.pt"
-                elif self.dataset == 'lidc-idri':
-                    filename = f"lidc-idri_{now}_{(self.step+self.resume_step):06d}.pt"
-                elif self.dataset == 'brats_inpainting':
-                    filename = f"brats_inpainting_{now}_{(self.step + self.resume_step):06d}.pt"
-                elif self.dataset == 'synthrad':
-                    filename = f"synthrad_{now}_{(self.step + self.resume_step):06d}.pt"
-                else:
-                    raise ValueError(f'dataset {self.dataset} not implemented')
-
-                save_dir = "/home/a_anami/work/data/checkpoints"
-                os.makedirs(save_dir, exist_ok=True)
-                
-                with bf.BlobFile(bf.join(save_dir, filename), "wb") as f:
+                logger.log(f"saving model to {filename}...")
+                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     th.save(state_dict, f)
-
-        save_checkpoint(0, self.model.state_dict())
-
-        if dist.get_rank() == 0:
-            checkpoint_dir = os.path.join(logger.get_dir(), 'checkpoints')
-            with bf.BlobFile(
-                bf.join(checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
+        
+        # U-Netモデルの保存
+        save_checkpoint(self.model.state_dict(), f"model_{self.step:06d}.pt")
+        # オプティマイザの保存
+        save_checkpoint(self.opt.state_dict(), f"opt_{self.step:06d}.pt")
+        # EMAモデルの保存
+        for i, rate in enumerate(self.ema_rate):
+            # EMAパラメータはリストなので、state_dict形式に変換して保存
+            ema_state_dict = {f"arr_{j}": p.data for j, p in enumerate(self.ema_params[i])}
+            save_checkpoint(ema_state_dict, f"ema_{rate}_{self.step:06d}.pt")
 
 
 def parse_resume_step_from_filename(filename):
@@ -377,9 +285,9 @@ def find_resume_checkpoint():
     return None
 
 
-def log_loss_dict(diffusion, ts, losses):
+def log_loss_dict(flow_matching, ts, losses):
     for key, values in losses.items():
-        logger.logkv_mean(key, values.mean().item())
+        logger.logkv_mean(f"loss/{key}", values.mean().item())
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
-            quartile = int(4 * sub_t / diffusion.num_timesteps)
-            logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
+            quartile = int(4 * sub_t / flow_matching.num_timesteps)
+            logger.logkv_mean(f"loss/{key}_q{quartile}", sub_loss)
