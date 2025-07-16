@@ -1,0 +1,21 @@
+# GPU設定
+gpu_id: 1  # 使用したいGPUの番号
+
+# --- 入力ファイル ---
+# 学習済みモデルのパス
+model_path: '/home/a_anami/work/code/seg_unet/best_model_unet_250711.pth' 
+
+# テストデータのディレクトリ
+data_dir: '/home/a_anami/work/data/BraTS2023-seg/val'
+
+# --- 出力ファイル ---
+# セグメンテーション結果（.nii.gz）の保存先ディレクトリ
+output_dir: '/home/a_anami/work/data/result_seg_0714_nott1c'
+
+# 評価結果（Dice, HD95）のCSV保存パス
+csv_path: '/home/a_anami/work/data/result_seg_0714_nott1c/unet_baseline.csv'
+
+# --- テスト条件 ---
+# 欠損させるモダリティのリスト
+# 何も欠損させない場合は、[] もしくはこの行自体を削除
+missing_modalities: ['t1c']

@@ -1,0 +1,19 @@
+# GPU設定
+gpu_id: 1
+
+# 実行名（保存されるファイル名に使われる）
+run_name: 'swin unetr_test_250716'
+
+# --- モデル設定 ---
+model:
+  name: 'SwinUNETR'  # ✨この行と
+  feature_size: 24   # ✨この行を追加してください
+
+# データパス
+train_data_dir: '/home/a_anami/work/data/BraTS2023-seg/train'
+val_data_dir: '/home/a_anami/work/data/BraTS2023-seg/val'
+
+# ハイパーパラメータ
+epochs: 5
+batch_size: 4
+lr: 0.0001
