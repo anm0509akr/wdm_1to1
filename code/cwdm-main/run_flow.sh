@@ -27,12 +27,12 @@ fi
 # Set data directories based on mode
 if [[ $MODE == 'train' ]]; then
   echo "MODE: training";
-  DATA_DIR=/home/a_anami/work/data/BraTS2023-GLI/training;
+  DATA_DIR=/home/a_anami/work/data/BraTS2023_split/training;
 
 elif [[ $MODE == 'sample' ]]; then
   BATCH_SIZE=1;
   echo "MODE: sampling (image-to-image translation)";
-  DATA_DIR=/home/a_anami/work/data/BraTS2023-GLI/validation;
+  DATA_DIR=/home/a_anami/work/data/BraTS2023_split/validation;
 fi
 
 ## --- ⬇️ MAJOR CHANGES HERE ⬇️ ---
@@ -67,7 +67,7 @@ TRAIN="
 --image_size=${IMAGE_SIZE}
 --use_fp16=False
 --lr=1e-5
---save_interval=100000
+--save_interval=50000
 --num_workers=12
 --devices=${GPU}
 --lr_anneal_steps=200000

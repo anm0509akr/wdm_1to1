@@ -13,7 +13,7 @@ import torch
 import math
 import numpy as np
 import torch as th
-from .train_util import visualize
+#from .train_util import visualize
 from .nn import mean_flat
 from .losses import normal_kl, discretized_gaussian_log_likelihood
 from scipy import ndimage

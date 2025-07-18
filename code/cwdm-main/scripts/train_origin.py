@@ -13,14 +13,12 @@ sys.path.append("..")
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
-# 'create_model_and_diffusion' は不要なので削除
-from guided_diffusion.script_util import (create_model, model_and_diffusion_defaults, 
+from guided_diffusion.script_util import (model_and_diffusion_defaults, create_model_and_diffusion,
                                           args_to_dict, add_dict_to_argparser)
 from guided_diffusion.train_util import TrainLoop
 from guided_diffusion.bratsloader import BRATSVolumes
 from torch.utils.tensorboard import SummaryWriter
 
-from guided_diffusion.flow_matching import FlowMatching
 
 def main():
     args = create_argparser().parse_args()
@@ -45,54 +43,30 @@ def main():
 
     dist_util.setup_dist(devices=args.devices)
 
-    logger.log("Creating model and flow matching...")
-    
-    # --- ⬇️ ここがエラーを根本的に解決する修正箇所です ⬇️ ---
+    logger.log("Creating model and diffusion...")
+    arguments = args_to_dict(args, model_and_diffusion_defaults().keys())
+    model, diffusion = create_model_and_diffusion(**arguments)
 
-    # 1. create_modelが受け取れる引数のリスト（ホワイトリスト）を定義します
-    model_args_keys = [
-        'image_size', 'in_channels', 'num_channels', 'out_channels', 
-        'num_res_blocks', 'attention_resolutions', 'dropout', 'channel_mult', 
-        'use_checkpoint', 'use_fp16', 'num_heads', 'num_head_channels', 
-        'use_scale_shift_norm', 'resblock_updown', 'use_new_attention_order', 
-        'dims', 'num_groups', 'renormalize', 'additive_skips', 'use_freq', 
-        'bottleneck_attention', 'resample_2d'
-    ]
-    
-    # 2. 全ての引数を含む辞書を作成します
-    all_args_dict = args_to_dict(args, model_and_diffusion_defaults().keys())
-    
-    # 3. ホワイトリストに含まれるキーだけを抽出して、モデル用の引数辞書を作成します
-    model_kwargs = {key: all_args_dict[key] for key in model_args_keys if key in all_args_dict}
-    
-    # 4. これで、クリーンになった引数でU-Netモデルを作成できます
-    model = create_model(**model_kwargs)
-
-    # --- ⬆️ 修正はここまで ⬆️ ---
-
-    model.to(dist_util.dev())
-    
-    # FlowMatchingクラスのインスタンスを作成
-    fm = FlowMatching(num_timesteps=args.diffusion_steps)
-    
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, fm, maxt=args.diffusion_steps)
-
+    # logger.log("Number of trainable parameters: {}".format(np.array([np.array(p.shape).prod() for p in model.parameters()]).sum()))
+    model.to(dist_util.dev([0, 1]) if len(args.devices) > 1 else dist_util.dev())  # allow for 2 devices
+    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion,  maxt=1000)
 
     if args.dataset == 'brats':
         ds = BRATSVolumes(args.data_dir, mode='train')
 
     datal = th.utils.data.DataLoader(ds,
-                                      batch_size=args.batch_size,
-                                      num_workers=args.num_workers,
-                                      shuffle=True,)
+                                     batch_size=args.batch_size,
+                                     num_workers=args.num_workers,
+                                     shuffle=True,)
 
     logger.log("Start training...")
     TrainLoop(
         model=model,
-        flow_matching=fm,
+        diffusion=diffusion,
         data=datal,
-        schedule_sampler=schedule_sampler,
         batch_size=args.batch_size,
+        in_channels=args.in_channels,
+        image_size=args.image_size,
         microbatch=args.microbatch,
         lr=args.lr,
         ema_rate=args.ema_rate,
@@ -102,16 +76,17 @@ def main():
         resume_step=args.resume_step,
         use_fp16=args.use_fp16,
         fp16_scale_growth=args.fp16_scale_growth,
+        schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
         dataset=args.dataset,
         summary_writer=summary_writer,
+        mode='i2i',
         contr=args.contr,
-        args=args,
     ).run_loop()
 
+
 def create_argparser():
-    # この関数は変更なしでOK
     defaults = dict(
         seed=0,
         data_dir="",
@@ -130,7 +105,7 @@ def create_argparser():
         fp16_scale_growth=1e-3,
         dataset='brats',
         use_tensorboard=True,
-        tensorboard_path='',
+        tensorboard_path='',  # set path to existing logdir for resuming
         devices=[0],
         dims=3,
         learn_sigma=False,
@@ -140,6 +115,7 @@ def create_argparser():
         out_channels=8,
         bottleneck_attention=False,
         num_workers=0,
+        mode='default',
         renormalize=True,
         additive_skips=False,
         use_freq=False,
