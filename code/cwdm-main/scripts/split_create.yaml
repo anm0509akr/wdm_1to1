@@ -1,0 +1,23 @@
+split:
+  mode: create                    # create | replay
+  src_root: /home/a_anami/work/data/BraTS2023-GLI/training
+  pattern: "*-t1n.nii.gz"         # 症例直下の入力ファイル名パターン
+  seed: 42
+
+  # train の大きさを「件数」か「比率」で指定（どちらか片方）
+  train_size: 1000
+  # train_ratio: 0.8
+
+  # 出力（シンボリックリンク or コピー）
+  train_out: /home/a_anami/work/data/BraTS2023_random/training_random
+  val_out:   /home/a_anami/work/data/BraTS2023_random/validation_random
+  copy: true            # true にすると実体コピー（容量注意）
+
+  # 分割リストの保存場所（省略時は train_out の親）
+  lists_dir: /home/a_anami/work/data/splits/exp1
+
+  # 任意: 層化（サイト/ベンダなど）を使う場合
+  # stratify:
+  #   metadata_csv: /home/a_anami/work/data/BraTS2023_metadata.csv
+  #   subjects_column: subject_id
+  #   group_column: site

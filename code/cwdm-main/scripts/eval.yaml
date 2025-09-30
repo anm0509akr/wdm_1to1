@@ -1,0 +1,15 @@
+# 評価対象フォルダ（*_pred/_gt が並ぶ）
+dir: /home/a_anami/work/data/flow_result_2509_random/samples_eval
+
+# ファイルグロブ
+pattern_pred: "*_pred.nii.gz"
+pattern_gt:   "*_gt.nii.gz"
+pattern_cond: "*_cond.nii.gz"
+
+# 出力CSV（未指定なら dir/metrics.csv）
+csv: /home/a_anami/work/data/flow_result_2509_random/samples_eval/metrics.csv
+
+# 指標設定
+axis: 0          # 0=axial, 1=coronal, 2=sagittal（SSIMのスライス方向）
+data_range: 2.0  # [-1,1] の場合は 2.0
+with_cond: true
